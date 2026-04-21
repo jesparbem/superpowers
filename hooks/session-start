@@ -34,6 +34,76 @@ using_superpowers_escaped=$(escape_for_json "$using_superpowers_content")
 warning_escaped=$(escape_for_json "$warning_message")
 session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your 'superpowers:using-superpowers' skill - your introduction to using skills. For all other skills, use the 'Skill' tool:**\n\n${using_superpowers_escaped}\n\n${warning_escaped}\n</EXTREMELY_IMPORTANT>"
 
+# Extract a frontmatter field value from an agent .md file.
+# Handles both inline values (name: foo) and block scalars (description: |).
+get_agent_frontmatter_value() {
+    local file="$1"
+    local key="$2"
+    awk -v key="$key" '
+        /^---/ { if (found_start) exit; found_start=1; next }
+        found_start {
+            if ($0 ~ ("^" key ":")) {
+                val = substr($0, length(key) + 2)
+                gsub(/^[ \t]+/, "", val)
+                if (val == "|" || val == "|-" || val == ">" || val == ">-") {
+                    while ((getline line) > 0) {
+                        gsub(/^[ \t]+/, "", line)
+                        if (line != "" && line != "---") { print line; exit }
+                    }
+                } else {
+                    print val
+                }
+                exit
+            }
+        }
+    ' "$file"
+}
+
+# Build a formatted "Sub-agents by source" section from plugin and personal agent dirs.
+build_agents_context() {
+    local plugin_agents_dir="${PLUGIN_ROOT}/agents"
+    local personal_agents_dir="${HOME}/.claude/agents"
+    local output=""
+
+    # Superpowers agents
+    local sp_section=""
+    if [ -d "$plugin_agents_dir" ]; then
+        for agent_file in "${plugin_agents_dir}"/*.md; do
+            [ -f "$agent_file" ] || continue
+            local name desc
+            name=$(get_agent_frontmatter_value "$agent_file" "name")
+            [ -z "$name" ] && name=$(basename "$agent_file" .md)
+            desc=$(get_agent_frontmatter_value "$agent_file" "description")
+            sp_section="${sp_section}\n- **${name}**: ${desc}"
+        done
+    fi
+    [ -n "$sp_section" ] && output="${output}\n### superpowers${sp_section}"
+
+    # Personal agents (~/.claude/agents/)
+    local personal_section=""
+    if [ -d "$personal_agents_dir" ]; then
+        for agent_file in "${personal_agents_dir}"/*.md; do
+            [ -f "$agent_file" ] || continue
+            local name desc
+            name=$(get_agent_frontmatter_value "$agent_file" "name")
+            [ -z "$name" ] && name=$(basename "$agent_file" .md)
+            desc=$(get_agent_frontmatter_value "$agent_file" "description")
+            personal_section="${personal_section}\n- **${name}**: ${desc}"
+        done
+    fi
+    [ -n "$personal_section" ] && output="${output}\n\n### personal${personal_section}"
+
+    if [ -n "$output" ]; then
+        printf '## Sub-agents by source\n%s' "$output"
+    fi
+}
+
+agents_context=$(build_agents_context)
+if [ -n "$agents_context" ]; then
+    agents_context_escaped=$(escape_for_json "$agents_context")
+    session_context="${session_context}\n\n${agents_context_escaped}"
+fi
+
 # Output context injection as JSON.
 # Keep both shapes for compatibility:
 # - Cursor hooks expect additional_context.
